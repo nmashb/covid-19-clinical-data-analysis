@@ -1,0 +1,447 @@
+---
+title: "An Exploratory Analysis of Blood Parameters and COVID-19"
+author: "Nur Mashitah Balqis binti Mohd Fauzi"
+date: "2026-11-22"
+output: pdf_document
+---
+# Introduction;
+
+This report explores a clinical dataset of 103 patients characterising complete blood count(cbc) values, demographic data, treatments, and corresponding patients' outcome.
+
+**Research question:** Which patient  and lab factors are associated with recovery?
+
+**Limitations:** Observational data - findings are associations, not causation
+
+---
+
+# Data preparation
+
+## Library section
+
+```{r}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(rstatix)
+library(coin)
+```
+
+## Load and inspect data
+
+```{r}
+cbc <- read.csv("C:\\Users\\user\\OneDrive\\Documents\\Personal Project\\cbc.database.csv")
+attach(cbc)
+View(cbc)
+head(cbc)
+names(cbc)
+str(cbc)
+summary(cbc)
+```
+## Convert character columns to Date
+```{r}
+cbc$Admission_DATE <- as.Date(cbc$Admission_DATE, format = "%m/%d/%Y")
+cbc$Discharge_DATE.or.date.of.Death <- as.Date(cbc$Discharge_DATE.or.date.of.Death, format = "%m/%d/%Y")
+cbc$Sample.Collection.Date <- as.Date(cbc$Sample.Collection.Date, format = "%m/%d/%Y")
+head(cbc)
+```
+## Check for missing values
+```{r}
+colSums(is.na(cbc))
+```
+## Locate missing values
+```{r}
+which(is.na(cbc),arr.ind = TRUE)
+```
+## Fix the malformed date entry
+```{r}
+# Investigation revealed two dates were entered as "0617/2020" instead of "06/17/2020", so it failed to parse and became NA.
+cbc$Sample.Collection.Date[is.na(cbc$Sample.Collection.Date)] <- as.Date("2020-06-17")
+colSums(is.na(cbc))
+```
+## Separate the treatments categories
+```{r}
+cbc <- cbc %>%
+  rename(treatment = What.kind.of.Treatment.provided) %>%
+  mutate(treatment_lc = str_to_lower(str_trim(treatment))) %>%
+  mutate(
+    treatment_paracetamol = str_detect(treatment_lc, "paracetamol"),
+    treatment_antibiotics = str_detect(treatment_lc, "antibiotics"),
+    treatment_o2 = str_detect(treatment_lc, "o2")
+  )
+```
+
+## Validate the treatment split
+```{r}
+sum(str_detect(cbc$treatment_lc, regex("paracetamol"))) == sum(cbc$treatment_paracetamol)
+sum(str_detect(cbc$treatment_lc, regex("antibiotics"))) == sum(cbc$treatment_antibiotics)
+sum(str_detect(cbc$treatment_lc, regex("o2"))) == sum(cbc$treatment_o2)
+```
+## Check binary column for inconsistencies
+```{r}
+lapply(cbc[c("Outcome", "Gender", "Ventilated..Y.N.")], table)
+```
+## Inspect the continuous data
+```{r}
+vars <- c("Red.blood.cell.distribution.width", "Monocytes...", "White.blood.cell.count", "Platelet.Count", "Lymphocyte.Count", "Neutrophils.Count")
+cbc %>%
+  select(all_of(vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~ variable, ncol = 3, nrow = 2, scales = "free") +
+  theme_minimal()
+```
+**Note:** In a non-medical dataset, outliers here could indicate data-entry errors. However, in clinical data, extreme values may be genuine (severe illness), so we do **not** remove them automatically
+
+## Check for duplicates
+```{r}
+sum(duplicated(cbc))
+```
+## Rename columns for convenience
+```{r}
+cbc <- cbc %>%
+  rename(Monocytes = Monocytes...) %>%
+  rename(Ventilated = Ventilated..Y.N.)
+names(cbc)
+```
+## Check date consistency
+```{r}
+# Check whether discharge/death date occurs before admission
+cbc %>%
+  filter(Discharge_DATE.or.date.of.Death < Admission_DATE)
+
+# Check whether sample collection occurs outside the admission-to-discharge period
+cbc %>%
+  filter(Sample.Collection.Date < Admission_DATE|
+         Sample.Collection.Date > Discharge_DATE.or.date.of.Death)
+```
+Data consistency was checked by comparing admission dates, discarge/death dates, and sample collection dates. Records with potentially inconsistent dates were flagged for investigation. Where the correct dates could not be verified, the original records were retained and the inconsistencies were documented rather than corrected based on assumptions.
+---
+# Results
+
+## Age distribution
+```{r}
+
+# Histogram: binned shape (as alternative view)
+
+ggplot(cbc, aes(x = Patient.Age)) +
+  geom_histogram(bins = 15, fill = "lightblue", color = "white") +
+  labs(
+    title = "Distribution of patient ages",
+    x = "Age (Years)",
+    y = "Number of patients"
+  ) +
+  theme_minimal()
+```
+The age distribution shows a concentration of patients across middle-aged and older age groups, with a possible second cluster among older patients. The sample includes patient ranging from 17 to 77 years old. However, the apparent clustering should be interpreted cautiously given the relatively small sample size. 
+
+## Demographics and outcome
+```{r}
+# Gender counts
+ggplot(cbc, aes(x = Gender, fill = Gender)) +
+  geom_bar() + 
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    title = "Gender",
+    x = NULL,
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Outcome counts
+ggplot(cbc, aes(x = Outcome, fill = Outcome)) + 
+  geom_bar() +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    title = "Outcome", 
+    x = NULL, 
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Ventilation counts
+ggplot(cbc, aes(x = Ventilated, fill = Ventilated)) + 
+  geom_bar() +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    title = "Ventilated", 
+    x = NULL, 
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+Gender split: The cohort is slightly majority male.
+Outcome: More than half of patient recovered. 
+Ventilated: The cohort is split almost exactly in half.
+
+## Treatment proportions
+```{r}
+cbc %>%
+  summarise(
+    Antibiotic = sum(treatment_antibiotics),
+    Paracetamol = sum(treatment_paracetamol),
+    O2 = sum(treatment_o2)
+  ) %>%
+  pivot_longer(everything(), names_to = "treatment", values_to = "n") %>%
+  mutate(percentage = round(n / nrow(cbc) * 100, 1)) %>%
+  ggplot(aes(x = treatment, y = n, fill = treatment)) + 
+  geom_col(width = 0.6) + 
+  geom_text(aes(label = paste0(n, "(", percentage, "%)")), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("steelblue", "tomato", "seagreen")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Patients receiving each treatment",
+    x = NULL,
+    y = "Number of patients"
+  ) +
+  theme_minimal()
+theme(legend.position = "none", 
+      panel.grid.major.x = element_blank(),
+      plot.title = element_text(face = "bold"))
+```
+Antibiotics were nearly universal in this cohort, administered to 98.1% (101/103) of patient. Oxygen (O2) treatment was also highly prevalent, given to 83.5% (86/103) of patient. In contrast, Paracetamol was prescribed to a much smaller subset, only to 17.5% (18/103) of the patients.
+
+## Treatment combination x ventilation
+```{r}
+cbc <- cbc %>%
+  mutate(
+    treatment_combo = case_when(
+      treatment_antibiotics & treatment_paracetamol & treatment_o2 ~ "Antibiotic + Paracetamol + O2",
+      treatment_antibiotics & treatment_paracetamol ~ "Antibiotic + Paracetamol",
+      treatment_antibiotics & treatment_o2 ~ "Antibiotic + O2",
+      treatment_paracetamol & treatment_o2 ~ "Paracetamol + O2",
+      treatment_antibiotics ~ "Antibiotic only",
+      treatment_paracetamol ~ "Paracetamol only",
+      treatment_o2 ~ "O2 only",
+    )
+  ) 
+cbc %>%
+  count(treatment_combo, Ventilated) %>%
+  pivot_wider(names_from = Ventilated, values_from = n, values_fill = 0)
+```
+```{r}
+cbc %>%
+  count(treatment_combo, Ventilated) %>%
+  ggplot(aes(x = Ventilated, y = reorder(treatment_combo, n), fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), color = "white", fontface = "bold") +
+  scale_fill_gradient(low = "#9EC5E0", high = "#1F4E79") +
+  labs(
+    title = "Treatment Combination vs Ventilation",
+    x = "Ventilated",
+    y = NULL,
+    fill = "Patients"
+  ) +
+  theme_minimal()
+```
+The heatmap reveals that Antibiotic and O2 was the dominant treatment regimen across both groups, accounting for 38 non-ventilated and 28 ventilated patients. In the ventilated group, every patient received antibiotics, and all but 11 patients received both Antibiotics and O2. Conversely, the O2 only regimen was only observed in the non-ventilated group, and Antibiotic only was observed in both groups. There were no patients in this dataset who received Paracetamol without the concurrent use of Antibiotics or O2.
+
+## Recovery rate among ventilated vs non-ventilated patients
+```{r}
+tab <- table(cbc$Ventilated, cbc$Outcome)
+tab
+```
+```{r}
+round(prop.table(tab, 1) * 100, 1)
+```
+```{r}
+chisq.test(tab)
+```
+There was a stark and highly significant difference in recovery rates between ventilated and non-ventilated patients.
+
+```{r}
+plot_cbc <- as.data.frame(tab)
+names(plot_cbc) <- c("ventilated", "outcome", "n")
+
+plot_cbc <- plot_cbc %>%
+  group_by(ventilated) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(outcome == "Recovered")
+
+ggplot(plot_cbc, aes(x = ventilated, y = pct, fill = ventilated)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = paste0(pct, "%")), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Revovery rate by ventilation status",
+    x = "Ventilated", 
+    y = "Recovered (%)" 
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold"))
+```
+Ventilation status is profoundly associated with patient outcome. Every single non-ventilated patient recovered (100%), whereas only 12.5% of ventilated patients recovered. 
+
+## Recovery rate by treatment combination
+```{r}
+tab1 <- table(cbc$treatment_combo, cbc$Outcome)
+tab1
+```
+```{r}
+round(prop.table(tab1, 1) * 100, 1)
+```
+```{r}
+chisq.test(tab1)
+```
+While comparing recovery rates across the four treatment combination, no statistically significant difference was found. 
+```{r}
+plot_cbc1 <- as.data.frame(tab1)
+names(plot_cbc1) <- c("treatment_combination", "outcome", "n")
+
+plot_cbc1 <- plot_cbc1 %>%
+  group_by(treatment_combination) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  filter(outcome == "Recovered")
+
+ggplot(plot_cbc1, aes(x = treatment_combination, y = pct, fill = treatment_combination)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = paste0(pct, "%")), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("steelblue", "tomato", "palegreen", "pink")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Revovery rate by treatment group",
+    x = "Treatment group", 
+    y = "Recovered (%)" 
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold"))
+```
+The O2 only group had a 100% recovery rate, but this was based on a very small sample size (n = 2).
+
+## Lab values by outcome
+```{r}
+labs <- c("Red.blood.cell.distribution.width", "Monocytes", "White.blood.cell.count", "Platelet.Count", "Lymphocyte.Count", "Neutrophils.Count")
+
+cbc %>%
+  select(Outcome, all_of(labs)) %>%
+  pivot_longer(-Outcome, names_to = "lab", values_to = "value") %>%
+  ggplot(aes(x = value, fill = Outcome)) +
+  geom_histogram(bins = 20, alpha = 0.6, position = "identity") +
+  facet_wrap(~ lab, scales = "free", ncol = 3) + 
+  scale_fill_manual(values = c("Recovered" = "#3B8C6E",
+                               "Not Recovered" = "#C05746")) +
+  labs(
+    title = "Distribution of labs by outcome",
+    x = "Value",
+    y = "Count",
+    fill = NULL
+    ) +
+  theme_minimal() +
+  theme(legend.position = "top",
+        strip.text = element_text(face = "bold"))
+```
+Due to the overlap of the two groups and the presence of extreme outliers (long right tail), these plots visually suggest non-normal distributions, confirming the need for non-parametric testing (Wilcoxon rank-sum).
+
+```{r}
+cbc %>%
+  select(Outcome, all_of(labs)) %>%
+  pivot_longer(-Outcome, names_to = "lab", values_to = "value") %>%
+  ggplot(aes(sample = value)) +
+  stat_qq(size = 1, alpha = 0.6) +
+  stat_qq_line(color = "red") +
+  facet_wrap(Outcome ~ lab, scales = "free", ncol = 6) +
+  labs(
+    title = "QQ Plots: Normality of labs by outcome",
+    x = "Theoretical quantiles",
+    y = "Sample quantiles"
+  ) + 
+  theme_minimal(base_size = 11) +
+  theme(strip.text = element_text(face = "bold", size = 8))
+```
+The Q-Q plot confirms that none of the six lab parameters follow a normal distribution. Across both outcome groups, the points form a distinct upward curve at the right tail, indicating that the data is severely right_skewed. Because the normality assumption is heavily violated, non-parametric test (Wilcoxon rank-sum) are the correct choice for comparing these groups.
+```{r}
+results <- lapply(labs, function(v) {
+  test <- wilcox.test(as.formula(paste(v, "~ Outcome")), data = cbc)
+  data.frame(lab = v, p_value = test$p.value)
+})
+results <- do.call(rbind, results)
+
+medians <- cbc %>%
+  group_by(Outcome) %>%
+  summarise(across(all_of(labs), ~ median(.x))) %>%
+  pivot_longer(-Outcome, names_to = "lab", values_to = "median") %>%
+  pivot_wider(names_from = Outcome, values_from = median)
+
+results <- results %>%
+  left_join(medians, by = "lab") %>%
+  mutate(p_adj = p.adjust(p_value, method = "BH"),
+         significant = p_adj < 0.05) %>%
+  arrange(p_value)
+
+results
+
+effect_sizes <- cbc %>%
+  select(Outcome, all_of(labs)) %>%
+  pivot_longer(-Outcome, names_to = "lab", values_to = "value") %>%
+  group_by(lab) %>%
+  wilcox_effsize(value ~ Outcome)
+ 
+effect_sizes
+
+results_final <- results %>%
+  left_join(
+    effect_sizes %>%
+      select(lab, effsize, magnitude),
+    by = "lab"
+  )
+
+results_final
+```
+Wilcoxon rank-sum tests were used to compare the six cbc parameters between recovered and non-recovered patients. After adjusting for multiple comparisons using the Benjamini-Hochberg method, two parameters differed significantly between the groups. 
+
+Red blood cell distribution width (RDW) was significantly higher in non-recovered patients (median 40.0) compared to recovered patients (median 19.0). Conversely, Platelet count was significantly lower in non-recovered patients (median = 186.5) compared to recovered patients (median = 228.9).
+
+The remaining four labs (Monocytes, Neutrophiles, White Blood Cell count and Lymphocyte count) did not show statistically significant differences between the outcome groups after correcting for multiple testing. 
+
+The effect size analysis further supported these findings. Red blood cell distribution width (RDW) and platelet count demonstrated moderate effect sizes (r = 0.377 and r = 0.310, respectively), suggesting comparatively larger differences in their distributions between the recovered and non-recovered groups. The remaining four parameters exhibited small effect sizes. These results suggest that RDW and platelet count showed the most notable differences between outcome groups among the six parameter examined. 
+
+# Discussion
+
+## Key findings
+
+This exploratory analysis of 103 patients identified three primary factors associated with patient recovery: ventilation status, Red blood cell distribution (RDW), and Platelet count. 
+
+1. Ventilation status and patient outcome 
+
+A  strong association was observed between ventilation status and patient outcome. All 55 non-ventilated patient were recorded as recovered, whereas 87.5% of ventilated patients were recorded as not recovered. This association may reflect differences in underlying disease severity between patients who required ventilation and those who did not. As the dataset is observational, this finding should not be interpreted as evidence that ventilation itself causes poorer outcomes.
+
+2. RDW and Platelet count differed significantly between groups
+
+After adjusting with multiple comparisons using the Benjamini-Hochberg method, red blood cell distribution width (RDW) and platelet count showed statistically significant differences between the outcome groups. Non-recovered patients had a high median RDW (40.0) compared to recovered patients (19.0), with a moderate effect size (r = 0.377). Similarly, non-recovered patients had a lower median platelet count (186.48) compared to recovered patients (228.93), with a moderate effect size (r = 0.310). These findings indicate differences in the distributions of these parameters between the two groups, although they do not establish causality.
+
+3. Common inflammatory markers did not separate the groups
+
+No statistically significant differences were detected in the four remaining lab parameters after adjusting for multiple comparisons. However, this does not establish that no association exists, particularly given the relatively small sample size.
+
+
+## Limitations
+
+1. Observational design and confounding
+
+As this is an observational study, the strong association between ventilation and poor outcome is almost certainly confounded by underlying disease severity. Therefore, causal claims cannot be made,
+
+2. Small sample size and unstable proportions
+
+With only 103 patients, some subgroup analyses involved very small numbers. For example, the O2 only treatment group had only 2 patients, resulting in a mathematically true but clinically unreliable 100% recovery rate. 
+
+3. Multiple testing
+
+Six lab parameters were compared between two groups. While the Benjamini-Hochberg (BH) adjustments was applied to control the false discovery rate, the possibility of residual Type I error cannot be entirely eliminated in exploratory analyses.
+
+4. Lack of clinical context
+
+This dataset lacked crucial confounding variables such as patient comorbidities, the exact severity of illness at admission, and time to time treatment. These factors heavily influence both lab values and recovery.
+
+5. Date inconsistencies
+
+Some records contained inconsistencies between admission, discharge/death, and sample collection dates. As the correct dates could not be verified, these records were retained without arbitrary correction. However, such inconsistencies limit the reliability of analysis involving hospital stay duration or temporal relationship between sample collection and patient outcomes.
+
+## Recommendations for future work
+
+1. Fit a multivariable logistic regression model adjusting for age, gender, and ventilation status to isolate the independent effect of RDW and Platelets on recovery. 
+
+2. Analyse duration of admission to treatment and recovery using the admission and discharge dates to see if treatments or lab affect the length of hospital stay and recovery status. 
